@@ -1,0 +1,96 @@
+# DATA STRUCTURES
+
+rooms = ["Room 101", "Room 102", "Room 103", ...]  # List of all rooms
+reservations = []  # List to store all reservations
+
+# Each reservation will be a dictionary like:
+# {
+#   "room": "Room 101",
+#   "start_time": "08:00",
+#   "end_time": "10:00",
+#   "program_year_section": "BSIT 1-4"
+# }
+
+# UTILITY FUNCTIONS
+
+def get_current_time():
+    # Return current system time
+    return current_time
+
+def is_time_overlap(start1, end1, start2, end2):
+    return start1 < end2 and start2 < end1
+
+def is_fully_booked(room):
+    # Check if room has reservations covering 7 AM - 9 PM continuously
+    # Return True/False
+    pass
+
+# ROOM STATUS LOGIC
+
+def get_room_status(room):
+    current_time = get_current_time()
+    room_reservations = [r for r in reservations if r["room"] == room]
+
+    for r in room_reservations:
+        if r["start_time"] <= current_time <= r["end_time"]:
+            return "RED"  # Occupied now
+
+    if is_fully_booked(room):
+        return "RED"  # Fully booked 7 AM-9 PM
+    elif room_reservations:
+        return "YELLOW"  # Partial reservations
+    else:
+        return "GREEN"  # No reservations
+
+# USER INTERACTION / MAIN PAGE
+
+def display_main_page():
+    for room in rooms:
+        color = get_room_status(room)
+        show_room_box(room, color)  # Display box with color
+
+def click_room(room):
+    show_occupied_list(room)
+    show_reservation_list(room)
+    new_reservation = get_user_input()  # Ask for start, end, program/year-section
+    add_reservation(room, new_reservation)
+
+# RESERVATION HANDLING
+
+def add_reservation(room, reservation):
+    reservations.append(reservation)
+    # Check if current time is within reservation
+    current_time = get_current_time()
+    if reservation["start_time"] <= current_time <= reservation["end_time"]:
+        update_room_to_occupied(room)
+
+# PAGE LISTS
+
+def list_reservations():
+    return [r for r in reservations]
+
+def list_available_rooms():
+    return [room for room in rooms if get_room_status(room) in ["GREEN", "YELLOW"]]
+
+def list_occupied_rooms():
+    return [room for room in rooms if get_room_status(room) == "RED"]
+
+
+# CONTINUOUS SYSTEM LOOP
+
+def run_system():
+    while True:  # Never ends, always ready for next user
+        display_main_page()
+        user_action = get_user_action()
+
+        if user_action == "click_room":
+            room = get_clicked_room()
+            click_room(room)
+        elif user_action == "view_reservations":
+            show_list(list_reservations())
+        elif user_action == "view_available":
+            show_list(list_available_rooms())
+        elif user_action == "view_occupied":
+            show_list(list_occupied_rooms())
+        # System keeps running for next user automatically
+        refresh_display()  # Update colors and lists in real-time

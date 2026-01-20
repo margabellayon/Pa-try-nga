@@ -1,0 +1,436 @@
+from flask import Flask, request, redirect, render_template_string, url_for
+from datetime import datetime, time
+
+app = Flask(__name__)
+
+# DATA
+rooms = [f"{floor*100 + num}" for floor in range(1, 5) for num in range(1, 11)]
+reservations = []
+
+# UTILITIES
+def remove_expired_reservations():
+    """Remove reservations whose end time has passed."""
+    now = datetime.now().time()
+    global reservations
+    reservations = [r for r in reservations if r["end_time"] > now]
+
+def get_room_status(room):
+    """Return room status: available, reserved, or occupied.
+
+    Occupied if:
+    1) Time from 07:00 to 21:00 is fully booked, OR
+    2) Time from now to 21:00 is fully booked continuously
+    """
+    remove_expired_reservations()
+    day_start = time(7,0)
+    day_end = time(21,0)
+    now = datetime.now().time()
+
+    room_res = sorted(
+        [r for r in reservations if r["room"] == room],
+        key=lambda r: r["start_time"]
+    )
+
+    if not room_res:
+        return "available"
+
+    # CHECK 1: FULL DAY (07–21)
+
+    coverage_day = day_start
+    for r in room_res:
+        if r["start_time"] > coverage_day:
+            break
+        coverage_day = max(coverage_day, r["end_time"])
+
+    if coverage_day >= day_end:
+        return "occupied"
+
+    # CHECK 2: FROM NOW → 21:00
+    coverage_now = now
+    for r in room_res:
+        if r["end_time"] <= coverage_now:
+            continue
+        if r["start_time"] > coverage_now:
+            break
+        coverage_now = max(coverage_now, r["end_time"])
+
+    if coverage_now >= day_end:
+        return "occupied"
+
+    return "reserved"
+
+def has_time_conflict(room, new_start, new_end):
+    remove_expired_reservations()
+    for r in reservations:
+        if r["room"] == room:
+            if not (new_end <= r["start_time"] or new_start >= r["end_time"]):
+                return True
+    return False
+
+def get_room_reservations(room):
+    res = [
+        {
+            "start": r["start_time"].strftime("%H:%M"),
+            "end": r["end_time"].strftime("%H:%M"),
+            "section": r.get("program_year_section", "")
+        }
+        for r in reservations if r["room"] == room
+    ]
+    res.sort(key=lambda x: x["start"])
+    return res
+
+# MAIN PAGE
+@app.route("/")
+def home():
+    filter_status = request.args.get("filter")
+    warning_msg = request.args.get("warning", "")
+
+    rooms_to_show = [
+        room for room in rooms
+        if not filter_status or filter_status == get_room_status(room)
+    ]
+
+    return render_template_string("""
+<!DOCTYPE html>
+<html>
+<head>
+<title>Sinta Room Reservation System</title>
+<style>
+@import url('https://fonts.cdnfonts.com/css/trajan-pro');
+
+html, body {
+    height: 100%;
+}
+body {
+    min-height: 100vh;
+    font-family: 'Trajan Pro', serif;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    text-align: center;
+    background-image: url(https://upload.wikimedia.org/wikipedia/en/9/9d/PUP_Santa_Rosa_campus_%28L._Arcillas%2C_Santa_Rosa%2C_Laguna%29%282018-08-26%29.jpg);
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+    background-attachment: fixed;
+}
+body::before {
+    content:"";
+    position:fixed;
+    inset:0;
+    background:rgba(128,0,0,0.15);
+    z-index:-1;
+}
+h1 {
+    background:rgba(128,0,0,1);
+    color:white;
+    -webkit-text-stroke: 0.2px black;
+    padding:20px;
+    margin:0;
+    font-size:40px;
+    border-bottom:3px solid maroon;
+}
+.button-container {
+    background:rgba(224,224,224,0.80);
+    padding:25px 0;
+    margin:20px 0;
+    border-top:3px solid maroon;
+    border-bottom:3px solid maroon;
+}
+.btn {
+    margin:8px;
+    padding:12px 25px;
+    background:#FFD700;
+    color:maroon;
+    font-size:18px;
+    border:3px solid maroon;
+    border-radius:8px;
+    font-weight:bold;
+    text-decoration:none;
+}
+.btn:hover { background:#FFC300; }
+
+.main-box {
+    max-width:900px;
+    max-height:500px;
+    margin:20px auto;
+    padding:25px;
+    display:flex;
+    flex-wrap:wrap;
+    justify-content:center;
+    gap:20px;
+    overflow-y:auto;
+    border:3px solid maroon;
+    border-radius:15px;
+    background: 
+        linear-gradient(rgba(0,0,0,0.1), rgba(0,0,0,0.1)),
+        url('https://i.redd.it/pup-sta-rosa-v0-17dvvlu5pogc1.jpg?width=4032&format=pjpg&auto=webp&s=05480ec6491832ba7dfe5ccfdaeff10ac42f0fc5');
+    background-size: cover;
+    background-position: center;
+}
+.room-box {
+    width:120px;
+    height:120px;
+    border-radius:15px;
+    display:flex;
+    flex-direction:column;
+    justify-content:center;
+    font-weight:bold;
+    cursor:pointer;
+    transition:transform .2s;
+}
+.room-box:hover { transform:scale(1.05); }
+.available { background:#ccffcc; border:3px solid #006400; }
+.reserved  { background:#ffddb3; border:3px solid #FF8C00; }
+.occupied  { background:#ff9999; border:3px solid #8B0000; }
+
+.modal {
+    display:none;
+    position:fixed;
+    inset:0;
+    background:rgba(0,0,0,.5);
+    justify-content:center;
+    align-items:center;
+}
+.modal-content {
+    background:white;
+    padding:20px;
+    border-radius:10px;
+    width:350px;
+    position:relative;
+}
+.close {
+    position:absolute;
+    top:5px;
+    right:10px;
+    cursor:pointer;
+    color:red;
+    font-size:20px;
+}
+.warning-box { 
+    margin:20px auto; 
+    padding:15px; 
+    max-width:700px; 
+    background:#ff4d4d; 
+    color:white; 
+    font-size:18px; 
+    font-weight:bold; 
+    border:2px solid #b30000; 
+    border-radius:10px; }
+.warning {
+    color:#b30000;
+    font-size:14px;
+    margin:5px 0;
+}
+input {
+    width:90%;
+    margin:5px 0;
+    padding:6px;
+}
+button {
+    padding:8px 15px;
+    background:maroon;
+    color:white;
+    border:none;
+    cursor:pointer;
+}
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<h1 style="position: relative; background: maroon; color: white; padding: 20px; margin: 0; border-bottom: 3px solid maroon; font-family: 'Trajan Pro', serif;">
+    Sinta Room Reservation System
+    <button id="menuBtn" style="position: absolute; top: 50%; left: 20px; transform: translateY(-50%); background: transparent; border: none; color: white; font-size: 30px; cursor: pointer;">⋮</button>
+</h1>
+
+<!-- LEFT PANEL -->
+<div id="sidePanel" style="height: 100%; width: 0; position: fixed; top:0; left:0; background-color: rgba(255,255,255,0.95); overflow-x:hidden; overflow-y:auto; transition: width 0.3s, padding 0.3s, box-shadow 0.3s; padding:0; box-shadow:none; z-index:1000; box-sizing:border-box;">
+    <a href="javascript:void(0)" onclick="closePanel()" style="position:absolute; padding-top:0px; padding-right:3px; top:0; right:0; font-size:30px; color:maroon; text-decoration:none;">&times;</a>
+    <div style="background-color: maroon; color:white; padding:10px 15px; font-weight:bold; text-align:left;">Options</div>
+    <ul style="text-align:left; padding-left:0; list-style:none; margin-top:5px;">
+        <li>
+            <button class="collapsible" style="background:none; border:none; color:black; font-weight:bold; padding:5px 10px; width:100%; text-align:left; cursor:pointer;">●&nbsp;About</button>
+            <div class="content" style="max-height:0; overflow:hidden; transition:max-height 0.3s ease; padding-left:10px;">
+                <p style="margin:5px 0; color:black;">
+                By letting users choose alternatives based on floor and time, the Sinta Room Reservation System seeks to develop a prototype that streamlines the process of browsing and booking classrooms. Through a simple queue-based reservation system, it aims to minimize schedule conflicts, cut down on time spent looking for vacant rooms, and promote equal usage of classes. The study also aims to highlight the advantages of a digital solution for improving campus classroom administration.
+                </p>
+            </div>
+        </li>
+        <li>
+            <button class="collapsible" style="background:none; border:none; color:black; font-weight:bold; padding:5px 10px; width:100%; text-align:left; cursor:pointer;">●&nbsp;Help / Guidelines</button>
+            <div class="content" style="max-height:0; overflow:hidden; transition:max-height 0.3s ease; padding-left:10px;">
+                There are 3 different categories, available rooms, reserved rooms, and occupied rooms. Each one of them contains 3 different colors.
+                <p style="margin:10px 0; color:black;">
+                    1. Available rooms contains green rooms and the rooms that are currently available.<br>
+                    2. Reserved rooms contains orange rooms, that was reserved but still not fully occupied for the day.<br>
+                    3. Occupied rooms contains red rooms and the rooms that are fully occupied for the day.<br>
+                </p>
+            </div>
+        </li>
+    </ul>
+</div>
+
+<script>
+const collapsibles = document.querySelectorAll(".collapsible");
+collapsibles.forEach(button => {
+    button.addEventListener("click", () => {
+        const content = button.nextElementSibling;
+        if (content.style.maxHeight && content.style.maxHeight !== "0px") {
+            content.style.maxHeight = "0";
+        } else {
+            content.style.maxHeight = content.scrollHeight + "px";
+        }
+    });
+});
+
+const panel = document.getElementById("sidePanel");
+const btn = document.getElementById("menuBtn");
+btn.addEventListener("click", () => {
+    panel.style.width = "300px";
+    panel.style.padding = "20px";
+    panel.style.boxShadow = "3px 0 0 maroon";
+});
+function closePanel() {
+    panel.style.width = "0";
+    panel.style.padding = "0";
+    panel.style.boxShadow = "none";
+}
+</script>
+
+<!-- FILTER BUTTONS -->
+<div class="button-container">
+    <a class="btn" href="/?filter=available">Available Rooms</a>
+    <a class="btn" href="/?filter=reserved">Reserved Rooms</a>
+    <a class="btn" href="/?filter=occupied">Occupied Rooms</a>
+</div>
+
+<!-- MAIN BOX: Only shows if rooms exist -->
+{% if rooms_to_show %}
+<div class="main-box">
+    {% for room in rooms_to_show %}
+        {% set status = get_room_status(room) %}
+        <div class="room-box {{ status }}" onclick='openModal("{{room}}", {{ get_room_reservations(room)|tojson }}, "{{status}}")'>
+            {{ room }}<br>{{ status|upper }}
+        </div>
+    {% endfor %}
+</div>
+{% endif %}
+
+{% if warning_msg %}
+    <div class="warning-box">{{ warning_msg }}</div>
+{% endif %}
+
+<!-- MODAL -->
+<div class="modal" id="modal">
+<div class="modal-content">
+<span class="close" onclick="closeModal()">&times;</span>
+<h3>Reserve Room <span id="roomLabel"></span></h3>
+<div class="warning" id="existing-warning"></div>
+<form id="reserve-form" method="POST" action="/reserve">
+<input type="hidden" name="room" id="roomInput">
+<input type="time" id="start" name="start_time" required><br>
+<input type="time" id="end" name="end_time" required><br>
+<input type="text" name="program_year_section" required placeholder="Program / Section"><br>
+<button type="submit" id="reserve-btn">Reserve</button>
+</form>
+</div>
+</div>
+
+<script>
+let existingTimes = [];
+function openModal(room, reservations, status) {
+    existingTimes = reservations;
+    document.getElementById("roomLabel").innerText = room;
+    document.getElementById("roomInput").value = room;
+    const warn = document.getElementById("existing-warning");
+    if (reservations.length > 0) {
+        warn.innerHTML = "⚠ Existing reservations:<br>" +
+            reservations.map(r =>
+                `${r.start} – ${r.end} (${r.section})
+                <form method="POST" action="/cancel" style="display:inline;">
+                    <input type="hidden" name="room" value="${room}">
+                    <input type="hidden" name="start_time" value="${r.start}">
+                    <input type="hidden" name="end_time" value="${r.end}">
+                    <button type="submit">Cancel</button>
+                </form>`).join("<br>");
+    } else {
+        warn.innerHTML = "";
+    }
+    const reserveBtn = document.getElementById("reserve-btn");
+    if (status === "occupied") {
+        reserveBtn.disabled = true;
+        reserveBtn.innerText = "Cannot Reserve";
+    } else {
+        reserveBtn.disabled = false;
+        reserveBtn.innerText = "Reserve";
+    }
+    document.getElementById("modal").style.display = "flex";
+}
+function closeModal() {
+    document.getElementById("modal").style.display = "none";
+}
+</script>
+
+<footer style="margin-top:auto; background:maroon; color:white; padding:5px 20px; font-family:'Trajan Pro', serif; font-size:14px; text-align:center;">
+ <div style="color:white; line-height:1.6; text-align:center;">
+  <span style="font-size:25px; font-weight:bold;">HACKATIVE: The Algorithm Arena - D4</span><br>
+  <span style="font-size:15px;">Anzano, Cedric&nbsp;&nbsp;●&nbsp;&nbsp;Casuyon, Margarette&nbsp;&nbsp;●&nbsp;&nbsp;Cruz, John Raven&nbsp;&nbsp;●&nbsp;&nbsp;Improgo, Aaron&nbsp;&nbsp;●&nbsp;&nbsp;Sambo, Neil</span><br>
+ </div>
+</footer>
+
+</body>
+</html>
+""",
+        rooms=rooms,
+        rooms_to_show=rooms_to_show,
+        get_room_status=get_room_status,
+        get_room_reservations=get_room_reservations,
+        filter_status=filter_status,
+        warning_msg=warning_msg
+    )
+
+# RESERVE
+@app.route("/reserve", methods=["POST"])
+def reserve():
+    room = request.form["room"]
+    start_time = datetime.strptime(request.form["start_time"], "%H:%M").time()
+    end_time = datetime.strptime(request.form["end_time"], "%H:%M").time()
+    section = request.form.get("program_year_section", "")
+
+    now = datetime.now().time()
+    day_start = time(7,0)
+    day_end = time(21,0)
+
+    # Validate time
+    if start_time < day_start or end_time > day_end or start_time >= end_time:
+        return redirect(url_for("home", warning="⚠ Time must be between 07:00 and 21:00"))
+
+    # Prevent past reservations
+    if start_time < now:
+        return redirect(url_for("home", warning="⚠ Cannot reserve a time in the past"))
+
+    if has_time_conflict(room, start_time, end_time):
+        return redirect(url_for("home", warning="⚠ Time overlaps with existing reservation"))
+
+    reservations.append({
+        "room": room,
+        "start_time": start_time,
+        "end_time": end_time,
+        "program_year_section": section
+    })
+
+    return redirect("/")
+
+# CANCEL
+@app.route("/cancel", methods=["POST"])
+def cancel():
+    room = request.form["room"]
+    start = datetime.strptime(request.form["start_time"], "%H:%M").time()
+    end = datetime.strptime(request.form["end_time"], "%H:%M").time()
+    global reservations
+    reservations = [r for r in reservations if not (r["room"] == room and r["start_time"] == start and r["end_time"] == end)]
+    return redirect("/")
+
+if __name__ == "__main__":
+    app.run(debug=True)
